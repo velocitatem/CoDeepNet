@@ -76,7 +76,7 @@ services:
     ports:
       - "6006:6006"
     volumes:
-      - ./ml/tensorboard:/logs
+      - ./tensorboard:/logs
     command: tensorboard --logdir=/logs --host=0.0.0.0 --port=6006
     restart: unless-stopped
 

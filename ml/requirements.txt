@@ -5,3 +5,9 @@ flask
 tqdm
 uvicorn
 torch
+seleniumbase
+pyspark
+flask-cors
+python-logging-loki
+python-dotenv
+tensorboard
