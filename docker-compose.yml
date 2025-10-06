@@ -1,0 +1,142 @@
+services:
+  redis:
+    container_name: "${NAME}-redis"
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  ml-inference:
+    container_name: "${NAME}-mlinfer"
+    build:
+      context: ./
+      dockerfile: ./docker/ml.Dockerfile
+    ports:
+      - "8200:8000"
+    environment:
+      - ML_LATEST_WEIGHTS_PATH=/app/models/weights
+      - PYTHONPATH=/app
+    volumes:
+      - ./ml/models:/app/models
+      - ./.env:/app/.env
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  worker:
+    container_name: "${NAME}-worker"
+    build:
+      context: ./
+      dockerfile: ./docker/worker.Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - PYTHONPATH=/app
+    volumes:
+      - ./.env:/app/.env
+    depends_on:
+      - redis
+      - ml-inference
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: "${NAME}-minio"
+    profiles: ["minio"]
+    ports:
+      - "9900:9000"   # API endpoint
+      - "9901:9001"   # Web console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+
+  create-bucket:
+    image: minio/mc
+    container_name: "${NAME}-create-bucket"
+    profiles: ["minio"]
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc mb myminio/dapper --ignore-existing;
+      exit 0;
+      "
+
+  tensorboard:
+    image: tensorflow/tensorflow:latest
+    container_name: "${NAME}-tensorboard"
+    profiles: ["tensorboard"]
+    ports:
+      - "6006:6006"
+    volumes:
+      - ./ml/tensorboard:/logs
+    command: tensorboard --logdir=/logs --host=0.0.0.0 --port=6006
+    restart: unless-stopped
+
+  # Logging Infrastructure - Minimal Setup
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: "${NAME}-loki"
+    profiles: ["logging"]
+    ports:
+      - "${LOKI_PORT}:3100"
+    volumes:
+      - loki_data:/loki
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: "${NAME}-grafana"
+    profiles: ["logging"]
+    ports:
+      - "${GRAFANA_PORT}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    restart: unless-stopped
+
+  # Database Services
+  postgres:
+    image: postgres:15-alpine
+    container_name: "${NAME}-postgres"
+    profiles: ["database", "postgres"]
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    restart: unless-stopped
+
+  mongodb:
+    image: mongo:7-jammy
+    container_name: "${NAME}-mongodb"
+    profiles: ["database", "mongodb"]
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-admin123}
+      MONGO_INITDB_DATABASE: ${MONGO_DB:-app}
+    volumes:
+      - mongodb_data:/data/db
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  minio_data:
+  loki_data:
+  grafana_data:
+  postgres_data:
+  mongodb_data:

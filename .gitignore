@@ -1,0 +1,7 @@
+**/node_modules
+*.env
+.venv/
+**/__pycache__
+**/.scraper_cache/
+**/downloaded_files/
+**.egg-info/
