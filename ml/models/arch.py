@@ -8,109 +8,147 @@ from typing import Optional
 class CNNConfig:
     """Configuration for individual CNN in Co-DeepNet architecture.
 
-    Based on Table 4 from the paper:
-    - Input layer: 1 feature map (for 1D data like DNA methylation or Iris features)
-    - C1: Convolution layer 1 -> 3 feature maps
-    - P1: Pooling layer 1 -> 3 feature maps
-    - C2: Convolution layer 2 -> 9 feature maps
-    - P2: Pooling layer 2 -> 9 feature maps
-    - FC1: Fully connected layer 1 -> 120 neurons
-    - FC2: Fully connected layer 2 -> 84 neurons
+    Supports dynamic depth for both convolutional and fully connected layers.
+
+    Examples:
+        # Default architecture (2 conv, 2 FC)
+        config = CNNConfig()
+
+        # Deeper network (4 conv, 3 FC)
+        config = CNNConfig(conv_depth=4, fc_depth=3)
+
+        # Shallow network (1 conv, 1 FC)
+        config = CNNConfig(conv_depth=1, fc_depth=1)
     """
-    input_features: int = 4  # Iris has 4 features (or 6 CpG sites for DNA)
-    conv1_out: int = 3
-    conv2_out: int = 9
-    fc1_out: int = 120
-    fc2_out: int = 84
-    output_dim: int = 1  # Regression output (age prediction) or 3 for Iris classification
+    input_features: int = 4  # Number of input features
+    output_dim: int = 1  # Output dimension
+
+    # Architecture depth
+    conv_depth: int = 2  # Number of convolutional layers
+    fc_depth: int = 2    # Number of fully connected layers
+
+    # Conv layer parameters
+    conv_base_channels: int = 3  # First conv layer channels (scales by 3x each layer)
     kernel_size: int = 3
     stride: int = 1
+
+    # FC layer parameters
+    fc_base_units: int = 120  # First FC layer units (scales by 0.7x each layer)
+
+    # Activation
     activation: str = 'relu'
 
 
 class CNN(nn.Module):
     """Single CNN component for Co-DeepNet.
 
-    Architecture follows paper's Section 3.2 specification:
-    - 1D convolutions for feature data (not images)
-    - Max pooling with stride 1
-    - Two fully connected layers
+    Dynamically builds CNN architecture based on config depth parameters:
+    - 1D convolutions for tabular/sequential data
+    - Max pooling with stride 1 after each conv
+    - Configurable number of fully connected layers
     """
 
     def __init__(self, config: CNNConfig):
         super(CNN, self).__init__()
         self.config = config
 
-        # Convolutional layers (1D for tabular/sequential data)
-        self.conv1 = nn.Conv1d(1, config.conv1_out, kernel_size=config.kernel_size,
-                               stride=config.stride, padding=config.kernel_size//2)
-        # Use stride=1 for pooling to maintain dimensions (as per paper)
-        self.pool1 = nn.MaxPool1d(kernel_size=2, stride=1)
+        # Activation function
+        if config.activation == 'relu':
+            self.activation = nn.ReLU()
+        elif config.activation == 'tanh':
+            self.activation = nn.Tanh()
+        else:
+            self.activation = nn.Sigmoid()
 
-        self.conv2 = nn.Conv1d(config.conv1_out, config.conv2_out,
-                               kernel_size=config.kernel_size, stride=config.stride,
-                               padding=config.kernel_size//2)
-        self.pool2 = nn.MaxPool1d(kernel_size=2, stride=1)
+        # Build convolutional layers dynamically
+        self.conv_layers = nn.ModuleList()
+        self.pool_layers = nn.ModuleList()
+        self.pool_enabled = []  # Track which layers should pool
 
-        # Activation
-        self.activation = nn.ReLU() if config.activation == 'relu' else nn.Tanh()
+        in_channels = 1
+        feature_size = config.input_features
 
-        # Calculate flattened size after convolutions
-        # After conv1 + pool1: input_features -> input_features - 1 (with stride=1 pooling)
-        # After conv2 + pool2: input_features - 1 -> input_features - 2
-        # For input_features=3: 3 -> 2 -> 1
-        feature_size_after_pools = config.input_features - 2
-        self.flattened_size = config.conv2_out * max(1, feature_size_after_pools)
+        for i in range(config.conv_depth):
+            out_channels = config.conv_base_channels * (3 ** i)  # Scale by 3x each layer
 
-        # Fully connected layers (for knowledge transmission, size may double)
-        self.fc1 = nn.Linear(self.flattened_size, config.fc1_out)
-        self.fc1_with_knowledge = nn.Linear(self.flattened_size * 2, config.fc1_out)
-        self.fc2 = nn.Linear(config.fc1_out, config.fc2_out)
-        self.fc_out = nn.Linear(config.fc2_out, config.output_dim)
+            conv = nn.Conv1d(in_channels, out_channels,
+                           kernel_size=config.kernel_size,
+                           stride=config.stride,
+                           padding=config.kernel_size // 2)
+
+            # Only pool if we have enough features left (need at least 2 for kernel_size=2)
+            can_pool = feature_size >= 2
+            pool = nn.MaxPool1d(kernel_size=2, stride=1) if can_pool else nn.Identity()
+
+            self.conv_layers.append(conv)
+            self.pool_layers.append(pool)
+            self.pool_enabled.append(can_pool)
+
+            if can_pool:
+                feature_size -= 1  # Pool with kernel=2, stride=1 reduces by 1
+
+            in_channels = out_channels
+
+        # Calculate flattened size after all conv/pool operations
+        self.flattened_size = out_channels * max(1, feature_size)
+
+        # Build fully connected layers dynamically
+        self.fc_layers = nn.ModuleList()
+
+        fc_in = self.flattened_size
+        for i in range(config.fc_depth):
+            fc_out = int(config.fc_base_units * (0.7 ** i))  # Scale down by 0.7x each layer
+            self.fc_layers.append(nn.Linear(fc_in, fc_out))
+            fc_in = fc_out
+
+        # Special first FC layer for knowledge transmission (double input size -> same output as fc_layers[0])
+        first_fc_out = int(config.fc_base_units)  # Same as fc_layers[0] output
+        self.fc_with_knowledge = nn.Linear(self.flattened_size * 2, first_fc_out)
+
+        # Output layer
+        self.fc_out = nn.Linear(fc_in, config.output_dim)
 
     def forward(self, x, transferred_knowledge: Optional[torch.Tensor] = None):
         """Forward pass with optional knowledge transfer.
 
         Args:
             x: Input tensor [batch, features]
-            transferred_knowledge: Feature map from inactive CNN [batch, features]
+            transferred_knowledge: Feature map from inactive CNN [batch, flattened_size]
 
         Returns:
             output: Predictions [batch, output_dim]
-            last_feature_map: For knowledge transmission [batch, conv2_out * feature_size]
+            last_feature_map: For knowledge transmission [batch, flattened_size]
         """
         batch_size = x.shape[0]
 
         # Add channel dimension for 1D conv: [batch, features] -> [batch, 1, features]
         x = x.unsqueeze(1)
 
-        # Convolutional layers
-        x = self.activation(self.conv1(x))
-        x = self.pool1(x)
-
-        x = self.activation(self.conv2(x))
-        x = self.pool2(x)
+        # Pass through all convolutional layers
+        for conv, pool in zip(self.conv_layers, self.pool_layers):
+            x = self.activation(conv(x))
+            x = pool(x)
 
         # Flatten for FC layers
-        last_feature_map = x.flatten(1).clone()  # [batch, conv2_out * feature_size]
+        last_feature_map = x.flatten(1).clone()
 
         # Knowledge transmission: concatenate transferred knowledge
-        if transferred_knowledge is not None:
-            # Only use transferred knowledge if batch sizes match
-            if transferred_knowledge.shape[0] == batch_size:
-                # Detach transferred knowledge to avoid gradient issues across CNNs
-                x = torch.cat([last_feature_map, transferred_knowledge.detach()], dim=1)
-                # Use the FC layer designed for knowledge transmission
-                x = self.activation(self.fc1_with_knowledge(x))
-            else:
-                # Batch size mismatch - skip knowledge transmission for this batch
-                x = self.activation(self.fc1(last_feature_map))
-        else:
-            # Use the regular FC layer
-            x = self.activation(self.fc1(last_feature_map))
+        if transferred_knowledge is not None and transferred_knowledge.shape[0] == batch_size:
+            # Detach transferred knowledge to avoid gradient issues across CNNs
+            x = torch.cat([last_feature_map, transferred_knowledge.detach()], dim=1)
+            # Use special FC layer that takes double input but outputs same size as fc_layers[0]
+            x = self.activation(self.fc_with_knowledge(x))
 
-        # Fully connected layers
-        x = self.activation(self.fc2(x))
+            # Continue through remaining FC layers (start from index 1)
+            for i in range(1, len(self.fc_layers)):
+                x = self.activation(self.fc_layers[i](x))
+        else:
+            # No knowledge transmission - use all FC layers normally
+            x = last_feature_map  # Start with the flattened feature map
+            for fc in self.fc_layers:
+                x = self.activation(fc(x))
+
+        # Output layer
         output = self.fc_out(x)
 
         return output, last_feature_map

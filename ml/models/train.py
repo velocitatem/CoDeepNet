@@ -206,12 +206,12 @@ def load_iris_data(batch_size=32, test_size=0.3, regression_target=False):
 if __name__ == "__main__":
     # Configuration for Iris dataset
     config = CNNConfig(
-        input_features=3,  # Using 3 features (excluding target)
-        conv1_out=3,
-        conv2_out=9,
-        fc1_out=120,
-        fc2_out=84,
-        output_dim=1,  # Single regression output
+        input_features=3,      # Using 3 features (excluding target)
+        output_dim=1,          # Single regression output
+        conv_depth=5,          # 2 convolutional layers
+        fc_depth=2,            # 2 fully connected layers
+        conv_base_channels=3,  # Base channels (3, 9, 27, ...)
+        fc_base_units=120,     # Base FC units (120, 84, ...)
         kernel_size=3,
         stride=1,
         activation='relu'
@@ -234,6 +234,6 @@ if __name__ == "__main__":
     )
 
     # Train model
-    trained_model = trainer.train(epochs=100)
+    trained_model = trainer.train(epochs=50)
 
     logger.info("Training completed successfully")
