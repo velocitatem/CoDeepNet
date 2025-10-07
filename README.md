@@ -303,7 +303,7 @@ This implementation is based on:
 
 ## License
 
-MIT
+IDK
 
 ---
 
