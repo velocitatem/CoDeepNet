@@ -1,7 +1,0 @@
-requests
-streamlit
-fastapi
-flask
-tqdm
-uvicorn
-torch
